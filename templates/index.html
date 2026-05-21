@@ -93,15 +93,20 @@
       <label>Prompt IA vignette
         <input type="text" id="ai_thumbnail" placeholder="Illustration…">
       </label>
+      <label>Token Hugging Face (optionnel)
+        <input type="password" id="hf_token" placeholder="hf_…">
+      </label>
       <label class="check"><input type="checkbox" id="ai_episodes"> Images IA par piste</label>
       <label class="check"><input type="checkbox" id="skip_tts"> Sans TTS</label>
       <label class="check"><input type="checkbox" id="skip_zip"> Sans zip Studio</label>
-      <button type="button" id="btn_preview">Aperçu</button>
+      <button type="button" id="btn_preview">Générer l’aperçu</button>
       <div id="preview_panel" class="preview-panel hidden">
         <div class="preview-header">
+          <img id="preview_image" class="preview-image hidden" alt="Vignette d’aperçu">
           <div>
             <strong id="preview_title"></strong>
             <p id="preview_desc" class="muted"></p>
+            <p id="preview_image_error" class="warn hidden"></p>
           </div>
           <div class="preview-actions" id="preview_actions">
             <button type="button" id="btn_select_all" class="small">Tout</button>
@@ -160,6 +165,7 @@
         lang: $("lang").value,
         pack_title: $("pack_title").value || null,
         ai_thumbnail_prompt: $("ai_thumbnail").value || null,
+        hf_token: $("hf_token").value || null,
         ai_episodes: $("ai_episodes").checked,
         skip_tts: $("skip_tts").checked,
         skip_zip: $("skip_zip").checked,
@@ -172,16 +178,36 @@
       return [...document.querySelectorAll(".ep-check:checked")].map((el) => el.dataset.id);
     }
 
+    function updateEpisodeOrderButtons() {
+      const items = [...document.querySelectorAll(".episode-item")];
+      items.forEach((li, index) => {
+        const up = li.querySelector(".ep-move-up");
+        const down = li.querySelector(".ep-move-down");
+        if (up) up.disabled = index === 0;
+        if (down) down.disabled = index === items.length - 1;
+      });
+    }
+
     function updateSelectionCount() {
       const total = document.querySelectorAll(".ep-check").length;
       const n = getSelectedEpisodeIds().length;
       $("selection_count").textContent = total > 1 ? `${n} / ${total}` : "";
       $("preview_actions").classList.toggle("hidden", total <= 1);
+      updateEpisodeOrderButtons();
     }
 
     function renderEpisodeList(data) {
       $("preview_title").textContent = data.title;
       $("preview_desc").textContent = data.description || "";
+      $("preview_image_error").textContent = data.preview_image_error ? `Image IA : ${data.preview_image_error}` : "";
+      $("preview_image_error").classList.toggle("hidden", !data.preview_image_error);
+      if (data.preview_image_url) {
+        $("preview_image").src = data.preview_image_url;
+        $("preview_image").classList.remove("hidden");
+      } else {
+        $("preview_image").removeAttribute("src");
+        $("preview_image").classList.add("hidden");
+      }
       const list = $("episode_list");
       list.innerHTML = "";
       (data.episodes || []).forEach((e) => {
@@ -205,7 +231,32 @@
           d.textContent = `${Math.floor(e.duration_sec / 60)}:${String(e.duration_sec % 60).padStart(2, "0")}`;
           label.appendChild(d);
         }
-        li.appendChild(label);
+        const moves = document.createElement("div");
+        moves.className = "ep-moves";
+        const up = document.createElement("button");
+        up.type = "button";
+        up.className = "ep-move ep-move-up";
+        up.textContent = "↑";
+        up.title = "Monter";
+        up.setAttribute("aria-label", `Monter ${e.title}`);
+        up.onclick = () => {
+          const prev = li.previousElementSibling;
+          if (prev) list.insertBefore(li, prev);
+          updateEpisodeOrderButtons();
+        };
+        const down = document.createElement("button");
+        down.type = "button";
+        down.className = "ep-move ep-move-down";
+        down.textContent = "↓";
+        down.title = "Descendre";
+        down.setAttribute("aria-label", `Descendre ${e.title}`);
+        down.onclick = () => {
+          const next = li.nextElementSibling;
+          if (next) list.insertBefore(next, li);
+          updateEpisodeOrderButtons();
+        };
+        moves.append(up, down);
+        li.append(label, moves);
         list.appendChild(li);
       });
       previewLoaded = (data.episodes || []).length > 0;

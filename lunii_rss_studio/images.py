@@ -88,6 +88,7 @@ def ensure_thumbnail(
     feed_image_url: str | None,
     ai_prompt: str | None,
     download_fn,
+    token: str | None = None,
     progress: ProgressFn = None,
 ) -> Path:
     """Crée 0-item.png (vignette du pack) depuis RSS ou IA."""
@@ -95,6 +96,9 @@ def ensure_thumbnail(
     if thumb.exists():
         resize_for_lunii(thumb, thumb)
         return thumb
+
+    if ai_prompt:
+        return generate_image_hf(ai_prompt, thumb, token=token, progress=progress)
 
     if feed_image_url:
         try:
@@ -106,9 +110,6 @@ def ensure_thumbnail(
             return thumb
         except Exception as e:
             _log(progress, f"Vignette RSS échouée : {e}")
-
-    if ai_prompt:
-        return generate_image_hf(ai_prompt, thumb, progress=progress)
 
     # Image par défaut : fond coloré avec titre
     from PIL import ImageDraw, ImageFont

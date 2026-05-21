@@ -80,6 +80,7 @@ python app.py
 ```
 
 Ouvrez **http://localhost:5556** — collez l'URL RSS, prévisualisez, puis générez le pack.
+Le token Hugging Face peut être collé directement dans l'interface pour générer une vignette IA d'aperçu sans modifier `.env`.
 
 ## Ligne de commande
 

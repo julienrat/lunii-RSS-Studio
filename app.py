@@ -6,12 +6,14 @@ from __future__ import annotations
 import threading
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 from lunii_rss_studio.builder import build_story_from_rss
 from lunii_rss_studio.config import MAX_UPLOAD_MB, WEB_PORT, WORK_DIR
+from lunii_rss_studio.images import generate_image_hf
 from lunii_rss_studio.pack_spg import find_studio_pack_generator
 from lunii_rss_studio.sources.litteratureaudio import preview_book
 from lunii_rss_studio.sources.pipeline import (
@@ -42,6 +44,8 @@ def request_entity_too_large(_e):
 
 UPLOAD_DIR = WORK_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+PREVIEW_DIR = WORK_DIR / "previews"
+PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 _jobs: dict[str, dict] = {}
 _job_lock = threading.Lock()
@@ -71,12 +75,29 @@ def _pack_kwargs(data: dict) -> dict:
         "pack_title": data.get("pack_title") or None,
         "ai_thumbnail_prompt": data.get("ai_thumbnail_prompt") or None,
         "ai_episode_images": bool(data.get("ai_episodes")),
+        "hf_token": data.get("hf_token") or None,
         "skip_tts": bool(data.get("skip_tts")),
         "skip_pack_zip": bool(data.get("skip_zip")),
         "lang": data.get("lang", "fr"),
         "chaptering": bool(data.get("chaptering")),
         "chapter_minutes": int(data.get("chapter_minutes", 15)),
     }
+
+
+def _add_preview_image(payload: dict, data: dict) -> dict:
+    prompt = (data.get("ai_thumbnail_prompt") or "").strip()
+    if not prompt:
+        payload["preview_image_url"] = payload.get("image_url")
+        return payload
+
+    try:
+        dest = PREVIEW_DIR / f"{uuid.uuid4().hex}.png"
+        generate_image_hf(prompt, dest, token=data.get("hf_token") or None)
+        payload["preview_image_url"] = f"/api/preview-image?path={quote(str(dest))}"
+    except Exception as e:
+        payload["preview_image_error"] = str(e)
+        payload["preview_image_url"] = payload.get("image_url")
+    return payload
 
 
 @app.route("/")
@@ -213,6 +234,19 @@ def download_zip():
     return send_file(p, as_attachment=True)
 
 
+@app.route("/api/preview-image")
+def preview_image():
+    path = request.args.get("path", "")
+    p = Path(path).resolve()
+    try:
+        p.relative_to(PREVIEW_DIR.resolve())
+    except ValueError:
+        return jsonify({"error": "Image invalide"}), 400
+    if not p.is_file():
+        return jsonify({"error": "Image invalide"}), 400
+    return send_file(p)
+
+
 @app.route("/api/preview", methods=["POST"])
 def preview():
     data = request.get_json(force=True) or {}
@@ -227,7 +261,7 @@ def preview():
                 min_duration=int(data.get("min_duration", 0)),
                 max_episodes=int(data.get("max_episodes", 30)),
             )
-            return jsonify({
+            payload = {
                 "title": feed.title,
                 "description": (feed.description or "")[:300],
                 "image_url": feed.image_url,
@@ -236,18 +270,23 @@ def preview():
                     for e in feed.episodes
                 ],
                 "total": len(feed.episodes),
-            })
+            }
+            return jsonify(_add_preview_image(payload, data))
         if source == "litteratureaudio":
-            return jsonify(preview_book(data.get("la_url", "").strip()))
+            payload = preview_book(data.get("la_url", "").strip())
+            return jsonify(_add_preview_image(payload, data))
         if source == "youtube":
-            return jsonify(preview_video(data.get("youtube_url", "").strip()))
+            payload = preview_video(data.get("youtube_url", "").strip())
+            return jsonify(_add_preview_image(payload, data))
         if source == "zip":
-            return jsonify({
+            payload = {
                 "title": data.get("pack_title") or "Archive ZIP",
                 "description": "Les pistes seront listées après upload",
+                "image_url": None,
                 "episodes": [{"id": "all", "title": "Tous les MP3 du ZIP", "duration_sec": 0, "has_image": False}],
                 "total": 1,
-            })
+            }
+            return jsonify(_add_preview_image(payload, data))
         return jsonify({"error": "Source inconnue"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400

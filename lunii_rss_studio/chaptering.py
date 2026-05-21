@@ -61,7 +61,7 @@ def split_mp3_by_duration(
 
     parts: list[tuple[str, Path]] = []
     for i, p in enumerate(sorted(dest_dir.glob("seg_*.mp3")), start=1):
-        title = f"{base_title} — partie {i:02d}"
+        title = f"{base_title}, chapitre {i}"
         final = dest_dir / f"{i:02d}.mp3"
         p.rename(final)
         parts.append((title, final))
@@ -103,6 +103,4 @@ def apply_chaptering(
         out.extend(parts)
         path.unlink(missing_ok=True)
 
-    if work.exists():
-        shutil.rmtree(work, ignore_errors=True)
     return out if out else tracks

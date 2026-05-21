@@ -32,6 +32,13 @@ class FeedInfo:
     episodes: list[Episode] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EpisodeNumber:
+    number: int
+    group: str
+    start: int
+
+
 def _log(fn: ProgressFn, msg: str) -> None:
     if fn:
         fn(msg)
@@ -78,6 +85,84 @@ def episode_entry_id(entry, audio_url: str) -> str:
     return entry.get("id") or entry.get("link") or audio_url
 
 
+_NUMBER_PATTERNS = (
+    re.compile(r"(?<!\d)(\d{1,4})\s*/\s*(\d{1,4})(?!\d)"),
+    re.compile(r"\b(?:episode|épisode|ep|ép|partie|part|chapitre|ch)\.?\s*(?:n[°o]\s*)?(\d{1,4})\b", re.I),
+    re.compile(r"#\s*(\d{1,4})\b"),
+    re.compile(r"^\s*(\d{1,4})(?:\s*[-.)_:]|$)"),
+)
+
+
+def _normalize_sort_group(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"\b(?:episode|épisode|ep|ép|partie|part|chapitre|ch)\b", "", text)
+    text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_episode_number(title: str) -> EpisodeNumber | None:
+    """Détecte un numéro d'épisode dans les formes courantes : 1/10, épisode 1, #1, 01 - titre."""
+    for pattern in _NUMBER_PATTERNS:
+        match = pattern.search(title)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if number <= 0:
+            continue
+        prefix = title[:match.start()]
+        if not prefix.strip():
+            prefix = "__episodes__"
+        group = _normalize_sort_group(prefix)
+        return EpisodeNumber(number=number, group=group, start=match.start())
+    return None
+
+
+def renumber_episodes(feed: FeedInfo) -> FeedInfo:
+    for i, ep in enumerate(feed.episodes, start=1):
+        ep.index = i
+    return feed
+
+
+def sort_numbered_episodes(feed: FeedInfo) -> FeedInfo:
+    """
+    Trie les épisodes numérotés du premier au dernier.
+
+    Les podcasts publient souvent les entrées RSS du plus récent au plus ancien. Quand les titres
+    contiennent une numérotation fiable, on trie chaque série de titres similaire sans mélanger des
+    arcs distincts qui recommencent tous à 1/10.
+    """
+    numbered = [(i, ep, extract_episode_number(ep.title)) for i, ep in enumerate(feed.episodes)]
+    detected = [(i, ep, n) for i, ep, n in numbered if n is not None]
+    if len(detected) < 2:
+        return renumber_episodes(feed)
+
+    groups: dict[str, int] = {}
+    for i, _ep, number in detected:
+        assert number is not None
+        key = number.group or "__episodes__"
+        groups.setdefault(key, i)
+
+    sortable_groups = {
+        key
+        for key in groups
+        if len({n.number for _i, _ep, n in detected if (n.group or "__episodes__") == key}) > 1
+    }
+    if not sortable_groups:
+        return renumber_episodes(feed)
+
+    def sort_key(item: tuple[int, Episode, EpisodeNumber | None]) -> tuple[int, int, int, int]:
+        original_index, _ep, number = item
+        if number is None:
+            return (original_index, 1, 0, original_index)
+        key = number.group or "__episodes__"
+        if key not in sortable_groups:
+            return (original_index, 1, number.number, original_index)
+        return (groups[key], 0, number.number, original_index)
+
+    feed.episodes = [ep for _i, ep, _number in sorted(numbered, key=sort_key)]
+    return renumber_episodes(feed)
+
+
 def extract_audio_url(entry) -> str | None:
     for link in getattr(entry, "links", []):
         if link.get("type", "").startswith("audio/") or link.get("rel") == "enclosure":
@@ -107,8 +192,6 @@ def fetch_feed(rss_url: str, min_duration: int = 0, max_episodes: int | None = N
     )
 
     for i, entry in enumerate(parsed.entries):
-        if max_episodes is not None and i >= max_episodes:
-            break
         audio_url = extract_audio_url(entry)
         if not audio_url:
             continue
@@ -128,19 +211,21 @@ def fetch_feed(rss_url: str, min_duration: int = 0, max_episodes: int | None = N
                 entry_id=episode_entry_id(entry, audio_url),
             )
         )
+    sort_numbered_episodes(info)
+    if max_episodes is not None:
+        info.episodes = info.episodes[:max_episodes]
+        renumber_episodes(info)
     return info
 
 
 def filter_episodes(feed: FeedInfo, episode_ids: list[str]) -> FeedInfo:
-    """Ne garde que les épisodes sélectionnés et renumérote pour le dossier Studio."""
-    wanted = set(episode_ids)
-    selected = [e for e in feed.episodes if e.entry_id in wanted]
+    """Ne garde que les épisodes sélectionnés, dans l'ordre demandé, puis renumérote."""
+    by_id = {e.entry_id: e for e in feed.episodes}
+    selected = [by_id[entry_id] for entry_id in episode_ids if entry_id in by_id]
     if not selected:
         raise ValueError("Aucun épisode sélectionné ne correspond au flux RSS")
-    for i, ep in enumerate(selected, start=1):
-        ep.index = i
     feed.episodes = selected
-    return feed
+    return renumber_episodes(feed)
 
 
 def download_file(url: str, dest: Path, progress: ProgressFn = None) -> Path:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -16,6 +17,7 @@ from .pack_spg import run_studio_pack_generator
 from .rss import FeedInfo, Episode, download_episodes, download_file, fetch_feed, filter_episodes, sanitize_filename
 
 ProgressFn = Callable[[str], None] | None
+_CHAPTER_SUFFIX_RE = re.compile(r"(, chapitre \d+)$", re.I)
 
 
 def _log(fn: ProgressFn, msg: str) -> None:
@@ -23,10 +25,21 @@ def _log(fn: ProgressFn, msg: str) -> None:
         fn(msg)
 
 
+def _safe_track_name(title: str) -> str:
+    safe = sanitize_filename(title, max_len=200)
+    match = _CHAPTER_SUFFIX_RE.search(safe)
+    if not match or len(safe) <= 80:
+        return sanitize_filename(title)
+
+    suffix = match.group(1)
+    prefix = safe[: 80 - len(suffix)].rstrip(" ,-–—")
+    return f"{prefix}{suffix}" or sanitize_filename(title)
+
+
 def tracks_to_feed(title: str, tracks: list[tuple[str, Path]], description: str = "", image_url: str | None = None) -> FeedInfo:
     feed = FeedInfo(title=title, description=description, image_url=image_url)
     for i, (t, _) in enumerate(tracks, start=1):
-        safe = sanitize_filename(t)
+        safe = _safe_track_name(t)
         feed.episodes.append(
             Episode(
                 title=t,
@@ -50,12 +63,27 @@ def install_tracks(
     menu_dir.mkdir(parents=True, exist_ok=True)
     title = menu_dir.parent.name
     feed = tracks_to_feed(title, tracks)
+    chapter_tmp_dirs: set[Path] = set()
+    expected_mp3s: set[Path] = set()
 
     for ep, (_, src) in zip(feed.episodes, tracks):
         dest = menu_dir / f"{ep.index:02d} - {ep.safe_name}.mp3"
-        shutil.copy2(src, dest)
+        expected_mp3s.add(dest.resolve())
+        if any(parent.name == "_chapitres_tmp" for parent in src.parents):
+            chapter_tmp_dirs.add(next(parent for parent in src.parents if parent.name == "_chapitres_tmp"))
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
         convert_audio_for_lunii(dest, progress=progress)
         _log(progress, f"Piste : {dest.name}")
+
+    for stale in menu_dir.glob("*.mp3"):
+        if stale.name == "0-item.mp3" or stale.name.endswith(".item.mp3"):
+            continue
+        if stale.resolve() not in expected_mp3s:
+            stale.unlink(missing_ok=True)
+
+    for tmp_dir in chapter_tmp_dirs:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return feed
 
@@ -68,6 +96,7 @@ def finalize_story_pack(
     pack_title: str | None = None,
     ai_thumbnail_prompt: str | None = None,
     ai_episode_images: bool = False,
+    hf_token: str | None = None,
     skip_tts: bool = False,
     skip_pack_zip: bool = False,
     lang: str = "fr",
@@ -84,8 +113,9 @@ def finalize_story_pack(
     ensure_thumbnail(
         story_dir,
         feed.image_url,
-        thumb_prompt if not feed.image_url else None,
+        ai_thumbnail_prompt or (thumb_prompt if not feed.image_url else None),
         download_file,
+        token=hf_token,
         progress=progress,
     )
 
@@ -97,7 +127,7 @@ def finalize_story_pack(
             item_png = menu_dir / f"{ep.index:02d} - {ep.safe_name}.item.png"
             if not item_png.exists():
                 try:
-                    generate_image_hf(f"Illustration : {ep.title}", item_png, progress=progress)
+                    generate_image_hf(f"Illustration : {ep.title}", item_png, token=hf_token, progress=progress)
                 except Exception as e:
                     _log(progress, f"IA ignorée : {e}")
 
@@ -142,6 +172,7 @@ def build_story_from_rss(
     pack_title: str | None = None,
     ai_thumbnail_prompt: str | None = None,
     ai_episode_images: bool = False,
+    hf_token: str | None = None,
     skip_download: bool = False,
     skip_tts: bool = False,
     skip_pack_zip: bool = False,
@@ -183,6 +214,7 @@ def build_story_from_rss(
         pack_title=pack_title,
         ai_thumbnail_prompt=ai_thumbnail_prompt,
         ai_episode_images=ai_episode_images,
+        hf_token=hf_token,
         skip_tts=skip_tts,
         skip_pack_zip=skip_pack_zip,
         lang=lang,
@@ -202,6 +234,7 @@ def build_story_from_tracks(
     pack_title: str | None = None,
     ai_thumbnail_prompt: str | None = None,
     ai_episode_images: bool = False,
+    hf_token: str | None = None,
     skip_tts: bool = False,
     skip_pack_zip: bool = False,
     lang: str = "fr",
@@ -230,6 +263,7 @@ def build_story_from_tracks(
         pack_title=pack_title or title,
         ai_thumbnail_prompt=ai_thumbnail_prompt,
         ai_episode_images=ai_episode_images,
+        hf_token=hf_token,
         skip_tts=skip_tts,
         skip_pack_zip=skip_pack_zip,
         lang=lang,
