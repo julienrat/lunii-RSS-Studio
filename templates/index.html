@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lunii RSS Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Lunii RSS Studio</h1>
+    <p>Podcasts, ZIP, Littérature audio, YouTube → pack Lunii</p>
+  </header>
+
+  <main>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="rss">Podcast RSS</button>
+      <button type="button" class="tab" data-tab="zip">ZIP MP3</button>
+      <button type="button" class="tab" data-tab="la">Littérature audio</button>
+      <button type="button" class="tab" data-tab="yt">YouTube</button>
+    </nav>
+
+    <section class="card panel active" id="panel_rss" data-panel="rss">
+      <h2>Flux RSS</h2>
+      <label>URL du podcast
+        <input type="url" id="rss_url" placeholder="https://…/podcast.xml">
+      </label>
+      <div class="row">
+        <label>Épisodes max (aperçu)
+          <input type="number" id="max_episodes" value="30" min="1" max="100">
+        </label>
+        <label>Durée min (sec)
+          <input type="number" id="min_duration" value="0" min="0">
+        </label>
+      </div>
+    </section>
+
+    <section class="card panel hidden" id="panel_zip" data-panel="zip">
+      <h2>Archive ZIP</h2>
+      <p class="muted">ZIP contenant des fichiers MP3 (livre audio déjà découpé, etc.)</p>
+      <label>Fichier ZIP (upload navigateur)
+        <input type="file" id="zip_file" accept=".zip,application/zip">
+      </label>
+      <label>Ou chemin ZIP sur ce PC (recommandé si gros fichier — évite l'erreur 413)
+        <input type="text" id="zip_path_local" placeholder="/home/…/mon-livre.zip">
+      </label>
+      {% if max_upload_mb > 0 %}
+      <p class="muted">Taille max upload : {{ max_upload_mb }} Mo</p>
+      {% else %}
+      <p class="muted">Upload sans limite de taille côté Flask (gros ZIP : préférez le chemin local)</p>
+      {% endif %}
+      <label>Titre du pack (optionnel)
+        <input type="text" id="zip_title" placeholder="Nom affiché sur la Lunii">
+      </label>
+    </section>
+
+    <section class="card panel hidden" id="panel_la" data-panel="la">
+      <h2>Littérature audio</h2>
+      <label>URL de la page du livre
+        <input type="url" id="la_url" placeholder="https://www.litteratureaudio.com/livre-audio-gratuit-mp3/…">
+      </label>
+    </section>
+
+    <section class="card panel hidden" id="panel_yt" data-panel="yt">
+      <h2>YouTube</h2>
+      <label>URL de la vidéo
+        <input type="url" id="youtube_url" placeholder="https://www.youtube.com/watch?v=…">
+      </label>
+      <p class="muted">Nécessite <code>yt-dlp</code> installé sur le système.</p>
+    </section>
+
+    <section class="card">
+      <h2>Chapitrage</h2>
+      <label class="check">
+        <input type="checkbox" id="chaptering">
+        Découper les pistes longues en chapitres (reprise à un morceau)
+      </label>
+      <label>Durée max par chapitre (minutes)
+        <input type="number" id="chapter_minutes" value="15" min="5" max="120">
+      </label>
+      <p class="muted">Chaque fichier plus long est découpé en parties. Les MP3 déjà courts (ex. ZIP chapitré) restent inchangés.</p>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <label>Langue TTS
+          <input type="text" id="lang" value="fr" maxlength="5">
+        </label>
+      </div>
+      <label>Titre vocal du pack (optionnel)
+        <input type="text" id="pack_title" placeholder="Nom lu par la Lunii au menu racine">
+      </label>
+      <label>Prompt IA vignette
+        <input type="text" id="ai_thumbnail" placeholder="Illustration…">
+      </label>
+      <label class="check"><input type="checkbox" id="ai_episodes"> Images IA par piste</label>
+      <label class="check"><input type="checkbox" id="skip_tts"> Sans TTS</label>
+      <label class="check"><input type="checkbox" id="skip_zip"> Sans zip Studio</label>
+      <button type="button" id="btn_preview">Aperçu</button>
+      <div id="preview_panel" class="preview-panel hidden">
+        <div class="preview-header">
+          <div>
+            <strong id="preview_title"></strong>
+            <p id="preview_desc" class="muted"></p>
+          </div>
+          <div class="preview-actions" id="preview_actions">
+            <button type="button" id="btn_select_all" class="small">Tout</button>
+            <button type="button" id="btn_select_none" class="small">Aucun</button>
+            <span id="selection_count" class="selection-count"></span>
+          </div>
+        </div>
+        <ul id="episode_list" class="episode-list"></ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Pack Studio</h2>
+      {% if spg_available %}
+      <p class="ok">studio-pack-generator : <code>{{ spg_cmd }}</code></p>
+      {% else %}
+      <p class="warn">Binaire SPG manquant — <code>bash scripts/install_studio_pack_generator.sh</code></p>
+      {% endif %}
+      <p class="muted">Sortie : <code>{{ work_dir }}</code></p>
+      <button type="button" id="btn_build" class="primary">Générer le pack</button>
+    </section>
+
+    <section class="card" id="log_section" hidden>
+      <h2>Journal</h2>
+      <pre id="log"></pre>
+      <p id="result"></p>
+      <a id="download_link" class="btn hidden" download>Télécharger le zip</a>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let activeTab = "rss";
+    let previewLoaded = false;
+    let previewSource = "rss";
+
+    const API_SOURCE = { rss: "rss", zip: "zip", la: "litteratureaudio", yt: "youtube" };
+    function apiSource() {
+      return API_SOURCE[activeTab] || activeTab;
+    }
+
+    document.querySelectorAll(".tab").forEach((btn) => {
+      btn.onclick = () => {
+        activeTab = btn.dataset.tab;
+        document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
+        document.querySelectorAll(".panel").forEach((p) => {
+          p.classList.toggle("hidden", p.dataset.panel !== activeTab);
+          p.classList.toggle("active", p.dataset.panel === activeTab);
+        });
+        previewLoaded = false;
+      };
+    });
+
+    function commonOpts() {
+      return {
+        lang: $("lang").value,
+        pack_title: $("pack_title").value || null,
+        ai_thumbnail_prompt: $("ai_thumbnail").value || null,
+        ai_episodes: $("ai_episodes").checked,
+        skip_tts: $("skip_tts").checked,
+        skip_zip: $("skip_zip").checked,
+        chaptering: $("chaptering").checked,
+        chapter_minutes: parseInt($("chapter_minutes").value, 10),
+      };
+    }
+
+    function getSelectedEpisodeIds() {
+      return [...document.querySelectorAll(".ep-check:checked")].map((el) => el.dataset.id);
+    }
+
+    function updateSelectionCount() {
+      const total = document.querySelectorAll(".ep-check").length;
+      const n = getSelectedEpisodeIds().length;
+      $("selection_count").textContent = total > 1 ? `${n} / ${total}` : "";
+      $("preview_actions").classList.toggle("hidden", total <= 1);
+    }
+
+    function renderEpisodeList(data) {
+      $("preview_title").textContent = data.title;
+      $("preview_desc").textContent = data.description || "";
+      const list = $("episode_list");
+      list.innerHTML = "";
+      (data.episodes || []).forEach((e) => {
+        const li = document.createElement("li");
+        li.className = "episode-item";
+        const label = document.createElement("label");
+        label.className = "episode-label";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "ep-check";
+        cb.dataset.id = e.id;
+        cb.checked = true;
+        cb.addEventListener("change", updateSelectionCount);
+        const title = document.createElement("span");
+        title.className = "ep-title";
+        title.textContent = e.title;
+        label.append(cb, title);
+        if (e.duration_sec) {
+          const d = document.createElement("span");
+          d.className = "ep-dur";
+          d.textContent = `${Math.floor(e.duration_sec / 60)}:${String(e.duration_sec % 60).padStart(2, "0")}`;
+          label.appendChild(d);
+        }
+        li.appendChild(label);
+        list.appendChild(li);
+      });
+      previewLoaded = (data.episodes || []).length > 0;
+      updateSelectionCount();
+    }
+
+    $("btn_preview").onclick = async () => {
+      $("preview_panel").classList.remove("hidden");
+      $("episode_list").innerHTML = "<li class='muted'>Chargement…</li>";
+      previewLoaded = false;
+      previewSource = apiSource();
+
+      const body = { source: apiSource(), ...commonOpts() };
+      if (activeTab === "rss") {
+        body.rss_url = $("rss_url").value.trim();
+        body.max_episodes = parseInt($("max_episodes").value, 10);
+        body.min_duration = parseInt($("min_duration").value, 10);
+        if (!body.rss_url) return alert("URL RSS requise");
+      } else if (activeTab === "la") {
+        body.la_url = $("la_url").value.trim();
+        if (!body.la_url) return alert("URL requise");
+      } else if (activeTab === "yt") {
+        body.youtube_url = $("youtube_url").value.trim();
+        if (!body.youtube_url) return alert("URL YouTube requise");
+      } else if (activeTab === "zip") {
+        body.pack_title = $("zip_title").value || "Archive ZIP";
+      }
+
+      const res = await fetch("/api/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        $("episode_list").innerHTML = `<li class="error">${data.error || res.status}</li>`;
+        return;
+      }
+      renderEpisodeList(data);
+    };
+
+    $("btn_select_all").onclick = () => {
+      document.querySelectorAll(".ep-check").forEach((cb) => { cb.checked = true; });
+      updateSelectionCount();
+    };
+    $("btn_select_none").onclick = () => {
+      document.querySelectorAll(".ep-check").forEach((cb) => { cb.checked = false; });
+      updateSelectionCount();
+    };
+
+    let pollTimer = null;
+
+    $("btn_build").onclick = async () => {
+      const opts = commonOpts();
+      let res;
+
+      if (activeTab === "zip") {
+        const localPath = $("zip_path_local").value.trim();
+        const file = $("zip_file").files[0];
+        if (!localPath && !file) return alert("Choisissez un ZIP ou indiquez un chemin local");
+
+        $("btn_build").disabled = true;
+        $("log_section").hidden = false;
+        $("log").textContent = localPath ? "Génération (ZIP local)…\n" : "Upload et génération…\n";
+
+        if (localPath) {
+          res = await fetch("/api/jobs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source: "zip",
+              zip_path_local: localPath,
+              pack_title: $("zip_title").value || null,
+              ...opts,
+            }),
+          });
+        } else {
+          const fd = new FormData();
+          fd.append("zip_file", file);
+          fd.append("source", "zip");
+          if ($("zip_title").value) fd.append("pack_title", $("zip_title").value);
+          Object.entries(opts).forEach(([k, v]) => fd.append(k, v === null ? "" : String(v)));
+          res = await fetch("/api/jobs", { method: "POST", body: fd });
+        }
+      } else {
+        const body = { source: apiSource(), ...opts };
+        if (activeTab === "rss") {
+          body.rss_url = $("rss_url").value.trim();
+          body.max_episodes = parseInt($("max_episodes").value, 10);
+          body.min_duration = parseInt($("min_duration").value, 10);
+          if (!body.rss_url) return alert("URL RSS requise");
+          const ids = getSelectedEpisodeIds();
+          if (previewLoaded && previewSource === "rss" && ids.length === 0) {
+            return alert("Sélectionnez au moins un épisode");
+          }
+          if (previewLoaded && previewSource === "rss" && ids.length > 0) {
+            body.episode_ids = ids;
+          }
+        } else if (activeTab === "la") {
+          body.la_url = $("la_url").value.trim();
+          if (!body.la_url) return alert("URL requise");
+        } else if (activeTab === "yt") {
+          body.youtube_url = $("youtube_url").value.trim();
+          if (!body.youtube_url) return alert("URL YouTube requise");
+        }
+
+        $("btn_build").disabled = true;
+        $("log_section").hidden = false;
+        $("log").textContent = "Démarrage…\n";
+        res = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        data = { error: res.status === 413 ? "Fichier trop volumineux (413)" : `Erreur HTTP ${res.status}` };
+      }
+      if (!res.ok) {
+        alert(data.error || `Erreur ${res.status}`);
+        $("btn_build").disabled = false;
+        return;
+      }
+
+      const poll = async () => {
+        const st = await fetch("/api/jobs/" + data.job_id);
+        const job = await st.json();
+        $("log").textContent = (job.log || []).join("\n");
+        if (job.status === "running") return;
+        clearInterval(pollTimer);
+        $("btn_build").disabled = false;
+        if (job.status === "error") {
+          $("result").textContent = "Erreur : " + job.error;
+          return;
+        }
+        const r = job.result;
+        $("result").textContent = `Terminé — ${r.episodes} piste(s)\n${r.story_dir}`;
+        if (r.zip_path) {
+          const link = $("download_link");
+          link.href = "/api/download?path=" + encodeURIComponent(r.zip_path);
+          link.textContent = "Télécharger " + r.zip_path.split("/").pop();
+          link.classList.remove("hidden");
+        }
+      };
+      pollTimer = setInterval(poll, 1500);
+      poll();
+    };
+  </script>
+</body>
+</html>
