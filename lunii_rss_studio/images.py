@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Callable
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from .config import HF_TOKEN, IMAGE_MODEL, LUNII_IMAGE_SIZE
 
 ProgressFn = Callable[[str], None] | None
+
+FONT_CHOICES = {
+    "dejavu-sans-bold": {
+        "label": "DejaVu Sans gras",
+        "path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    },
+    "dejavu-serif-bold": {
+        "label": "DejaVu Serif gras",
+        "path": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    },
+    "dejavu-mono-bold": {
+        "label": "DejaVu Mono gras",
+        "path": "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    },
+    "liberation-sans-bold": {
+        "label": "Liberation Sans gras",
+        "path": "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    },
+}
+_CHAPTER_RE = re.compile(r"\bchapitre\s+(\d+)\b", re.I)
 
 
 def _log(fn: ProgressFn, msg: str) -> None:
@@ -35,6 +56,110 @@ def resize_for_lunii(src: Path, dest: Path | None = None) -> Path:
                 dest = dest.with_suffix(".png")
             img.save(dest, "PNG")
     return dest
+
+
+def chapter_number_from_title(title: str) -> str | None:
+    match = _CHAPTER_RE.search(title)
+    return match.group(1) if match else None
+
+
+def _font(font_key: str, size: int):
+    choice = FONT_CHOICES.get(font_key) or FONT_CHOICES["dejavu-sans-bold"]
+    path = Path(choice["path"])
+    try:
+        if path.is_file():
+            return ImageFont.truetype(str(path), size)
+    except OSError:
+        pass
+    return ImageFont.load_default()
+
+
+def render_chapter_image_text(
+    image_path: Path,
+    text: str,
+    *,
+    font_key: str = "dejavu-sans-bold",
+    font_size: int = 46,
+) -> Path:
+    """Ajoute un libellé de chapitre centré sur une image Lunii."""
+    resize_for_lunii(image_path, image_path)
+    font_size = max(12, min(int(font_size), 96))
+
+    with Image.open(image_path) as img:
+        img = img.convert("RGB").resize(LUNII_IMAGE_SIZE, Image.Resampling.LANCZOS)
+        overlay = Image.new("RGBA", LUNII_IMAGE_SIZE, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        font = _font(font_key, font_size)
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        pad_x = 18
+        pad_y = 10
+        rect_w = min(LUNII_IMAGE_SIZE[0] - 24, text_w + pad_x * 2)
+        rect_h = text_h + pad_y * 2
+        x = (LUNII_IMAGE_SIZE[0] - rect_w) // 2
+        y = LUNII_IMAGE_SIZE[1] - rect_h - 22
+
+        draw.rounded_rectangle(
+            (x, y, x + rect_w, y + rect_h),
+            radius=8,
+            fill=(0, 0, 0, 165),
+        )
+        draw.text(
+            ((LUNII_IMAGE_SIZE[0] - text_w) // 2, y + pad_y - bbox[1]),
+            text,
+            fill=(255, 255, 255, 255),
+            font=font,
+        )
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        img.save(image_path, "PNG")
+    return image_path
+
+
+def render_chapter_image_preview(
+    output_path: Path,
+    *,
+    text: str = "Chapitre 1",
+    font_key: str = "dejavu-sans-bold",
+    font_size: int = 46,
+) -> Path:
+    """Crée une image de prévisualisation du libellé de chapitre."""
+    output_path = output_path.with_suffix(".png")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new("RGB", LUNII_IMAGE_SIZE, color=(48, 76, 118))
+    draw = ImageDraw.Draw(img)
+    for y in range(LUNII_IMAGE_SIZE[1]):
+        color = (48 + y // 8, 76 + y // 12, 118 + y // 20)
+        draw.line((0, y, LUNII_IMAGE_SIZE[0], y), fill=color)
+    img.save(output_path, "PNG")
+    return render_chapter_image_text(output_path, text, font_key=font_key, font_size=font_size)
+
+
+def apply_chapter_image_texts(
+    menu_dir: Path,
+    feed,
+    *,
+    enabled: bool = False,
+    font_key: str = "dejavu-sans-bold",
+    font_size: int = 46,
+    template: str = "Chapitre {n}",
+    progress: ProgressFn = None,
+) -> None:
+    """Ajoute 'Chapitre X' sur les images des pistes chapitrées."""
+    if not enabled:
+        return
+
+    for ep in feed.episodes:
+        chapter = chapter_number_from_title(ep.title)
+        if not chapter:
+            continue
+        item_png = menu_dir / f"{ep.index:02d} - {ep.safe_name}.item.png"
+        if not item_png.exists():
+            continue
+        text = (template or "Chapitre {n}").replace("{n}", chapter).replace("X", chapter)
+        render_chapter_image_text(item_png, text, font_key=font_key, font_size=font_size)
+        _log(progress, f"Texte chapitre : {item_png.name}")
 
 
 def process_story_images(story_dir: Path, progress: ProgressFn = None) -> int:

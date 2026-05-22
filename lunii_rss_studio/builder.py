@@ -11,7 +11,7 @@ from typing import Callable
 from .audio import convert_audio_for_lunii, generate_story_titles
 from .chaptering import apply_chaptering
 from .config import WORK_DIR
-from .images import ensure_thumbnail, generate_image_hf, process_story_images
+from .images import apply_chapter_image_texts, ensure_thumbnail, generate_image_hf, process_story_images
 from .items import ensure_episode_item_images, ensure_menu_items
 from .pack_spg import run_studio_pack_generator
 from .rss import FeedInfo, Episode, download_episodes, download_file, fetch_feed, filter_episodes, sanitize_filename
@@ -100,6 +100,12 @@ def finalize_story_pack(
     skip_tts: bool = False,
     skip_pack_zip: bool = False,
     lang: str = "fr",
+    tts_engine: str = "gtts",
+    tts_style_prompt: str | None = None,
+    chapter_image_text: bool = False,
+    chapter_image_font: str = "dejavu-sans-bold",
+    chapter_image_font_size: int = 46,
+    chapter_image_template: str = "Chapitre {n}",
     output_base: Path | None = None,
     progress: ProgressFn = None,
 ) -> dict:
@@ -125,19 +131,47 @@ def finalize_story_pack(
     if ai_episode_images:
         for ep in feed.episodes:
             item_png = menu_dir / f"{ep.index:02d} - {ep.safe_name}.item.png"
-            if not item_png.exists():
-                try:
-                    generate_image_hf(f"Illustration : {ep.title}", item_png, token=hf_token, progress=progress)
-                except Exception as e:
-                    _log(progress, f"IA ignorée : {e}")
+            try:
+                generate_image_hf(f"Illustration : {ep.title}", item_png, token=hf_token, progress=progress)
+            except Exception as e:
+                _log(progress, f"IA ignorée : {e}")
+
+    if menu_dir.is_dir():
+        apply_chapter_image_texts(
+            menu_dir,
+            feed,
+            enabled=chapter_image_text,
+            font_key=chapter_image_font,
+            font_size=chapter_image_font_size,
+            template=chapter_image_template,
+            progress=progress,
+        )
 
     process_story_images(story_dir, progress=progress)
 
     title = pack_title or feed.title
     if not skip_tts:
-        generate_story_titles(story_dir, pack_title=title, menu_names=[menu_folder], progress=progress)
+        generate_story_titles(
+            story_dir,
+            pack_title=title,
+            menu_names=[menu_folder],
+            lang=lang,
+            tts_engine=tts_engine,
+            hf_token=hf_token,
+            tts_style_prompt=tts_style_prompt,
+            progress=progress,
+        )
     if menu_dir.is_dir():
-        ensure_menu_items(story_dir, menu_name, menu_label=menu_name, progress=progress)
+        ensure_menu_items(
+            story_dir,
+            menu_name,
+            menu_label=menu_name,
+            lang=lang,
+            tts_engine=tts_engine,
+            hf_token=hf_token,
+            tts_style_prompt=tts_style_prompt,
+            progress=progress,
+        )
 
     (story_dir / "metadata.json").write_text(
         json.dumps({
@@ -177,6 +211,12 @@ def build_story_from_rss(
     skip_tts: bool = False,
     skip_pack_zip: bool = False,
     lang: str = "fr",
+    tts_engine: str = "gtts",
+    tts_style_prompt: str | None = None,
+    chapter_image_text: bool = False,
+    chapter_image_font: str = "dejavu-sans-bold",
+    chapter_image_font_size: int = 46,
+    chapter_image_template: str = "Chapitre {n}",
     episode_ids: list[str] | None = None,
     chaptering: bool = False,
     chapter_minutes: int = 15,
@@ -218,6 +258,12 @@ def build_story_from_rss(
         skip_tts=skip_tts,
         skip_pack_zip=skip_pack_zip,
         lang=lang,
+        tts_engine=tts_engine,
+        tts_style_prompt=tts_style_prompt,
+        chapter_image_text=chapter_image_text,
+        chapter_image_font=chapter_image_font,
+        chapter_image_font_size=chapter_image_font_size,
+        chapter_image_template=chapter_image_template,
         output_base=output_base,
         progress=progress,
     )
@@ -238,6 +284,12 @@ def build_story_from_tracks(
     skip_tts: bool = False,
     skip_pack_zip: bool = False,
     lang: str = "fr",
+    tts_engine: str = "gtts",
+    tts_style_prompt: str | None = None,
+    chapter_image_text: bool = False,
+    chapter_image_font: str = "dejavu-sans-bold",
+    chapter_image_font_size: int = 46,
+    chapter_image_template: str = "Chapitre {n}",
     chaptering: bool = False,
     chapter_minutes: int = 15,
     progress: ProgressFn = None,
@@ -267,6 +319,12 @@ def build_story_from_tracks(
         skip_tts=skip_tts,
         skip_pack_zip=skip_pack_zip,
         lang=lang,
+        tts_engine=tts_engine,
+        tts_style_prompt=tts_style_prompt,
+        chapter_image_text=chapter_image_text,
+        chapter_image_font=chapter_image_font,
+        chapter_image_font_size=chapter_image_font_size,
+        chapter_image_template=chapter_image_template,
         output_base=output_base,
         progress=progress,
     )

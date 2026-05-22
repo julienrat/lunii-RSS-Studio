@@ -78,6 +78,30 @@
       <label>Durée max par chapitre (minutes)
         <input type="number" id="chapter_minutes" value="15" min="5" max="120">
       </label>
+      <label class="check">
+        <input type="checkbox" id="chapter_image_text">
+        Ajouter le texte du chapitre sur les images
+      </label>
+      <div class="row">
+        <label>Texte image chapitre
+          <input type="text" id="chapter_image_template" value="Chapitre {n}">
+        </label>
+        <label>Typographie
+          <select id="chapter_image_font">
+            {% for value, font in font_choices.items() %}
+            <option value="{{ value }}">{{ font.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Taille
+          <input type="number" id="chapter_image_font_size" value="46" min="12" max="96">
+        </label>
+      </div>
+      <div class="chapter-image-preview">
+        <button type="button" id="btn_chapter_image_preview" class="small">Prévisualiser l’image chapitre</button>
+        <img id="chapter_image_preview" class="preview-image hidden" alt="Prévisualisation chapitre">
+        <p id="chapter_image_preview_error" class="warn hidden"></p>
+      </div>
       <p class="muted">Chaque fichier plus long est découpé en parties. Les MP3 déjà courts (ex. ZIP chapitré) restent inchangés.</p>
     </section>
 
@@ -86,6 +110,24 @@
         <label>Langue TTS
           <input type="text" id="lang" value="fr" maxlength="5">
         </label>
+        <label>Moteur TTS
+          <select id="tts_engine">
+            {% for value, label in tts_engines.items() %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <label id="tts_style_wrap" class="hidden">Style de voix (Parler-TTS)
+        <input type="text" id="tts_style" placeholder="Une femme qui parle lentement avec une voix grave">
+      </label>
+      <div class="tts-preview">
+        <label>Phrase de test TTS
+          <input type="text" id="tts_preview_text" value="Bonjour, voici un aperçu de la voix.">
+        </label>
+        <button type="button" id="btn_tts_preview" class="small">Prévisualiser la voix</button>
+        <audio id="tts_preview_audio" controls class="hidden"></audio>
+        <p id="tts_preview_error" class="warn hidden"></p>
       </div>
       <label>Titre vocal du pack (optionnel)
         <input type="text" id="pack_title" placeholder="Nom lu par la Lunii au menu racine">
@@ -142,11 +184,28 @@
     let activeTab = "rss";
     let previewLoaded = false;
     let previewSource = "rss";
+    const HF_TOKEN_KEY = "lunii_rss_studio_hf_token";
 
     const API_SOURCE = { rss: "rss", zip: "zip", la: "litteratureaudio", yt: "youtube" };
     function apiSource() {
       return API_SOURCE[activeTab] || activeTab;
     }
+
+    const savedToken = localStorage.getItem(HF_TOKEN_KEY);
+    if (savedToken) $("hf_token").value = savedToken;
+
+    $("hf_token").addEventListener("input", () => {
+      const token = $("hf_token").value.trim();
+      if (token) localStorage.setItem(HF_TOKEN_KEY, token);
+      else localStorage.removeItem(HF_TOKEN_KEY);
+    });
+
+    function updateTtsUi() {
+      const isParler = $("tts_engine").value.toLowerCase().includes("parler");
+      $("tts_style_wrap").classList.toggle("hidden", !isParler);
+    }
+    $("tts_engine").addEventListener("change", updateTtsUi);
+    updateTtsUi();
 
     document.querySelectorAll(".tab").forEach((btn) => {
       btn.onclick = () => {
@@ -166,6 +225,12 @@
         pack_title: $("pack_title").value || null,
         ai_thumbnail_prompt: $("ai_thumbnail").value || null,
         hf_token: $("hf_token").value || null,
+        tts_engine: $("tts_engine").value,
+        tts_style_prompt: $("tts_style").value || null,
+        chapter_image_text: $("chapter_image_text").checked,
+        chapter_image_font: $("chapter_image_font").value,
+        chapter_image_font_size: parseInt($("chapter_image_font_size").value, 10),
+        chapter_image_template: $("chapter_image_template").value || "Chapitre {n}",
         ai_episodes: $("ai_episodes").checked,
         skip_tts: $("skip_tts").checked,
         skip_zip: $("skip_zip").checked,
@@ -173,6 +238,55 @@
         chapter_minutes: parseInt($("chapter_minutes").value, 10),
       };
     }
+
+    $("btn_chapter_image_preview").onclick = async () => {
+      $("chapter_image_preview_error").classList.add("hidden");
+      $("chapter_image_preview").classList.add("hidden");
+      const res = await fetch("/api/chapter-image-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chapter_image_font: $("chapter_image_font").value,
+          chapter_image_font_size: parseInt($("chapter_image_font_size").value, 10),
+          chapter_image_template: $("chapter_image_template").value || "Chapitre {n}",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        $("chapter_image_preview_error").textContent = data.error || `Erreur ${res.status}`;
+        $("chapter_image_preview_error").classList.remove("hidden");
+        return;
+      }
+      $("chapter_image_preview").src = data.image_url;
+      $("chapter_image_preview").classList.remove("hidden");
+    };
+
+    $("btn_tts_preview").onclick = async () => {
+      $("btn_tts_preview").disabled = true;
+      $("tts_preview_error").classList.add("hidden");
+      $("tts_preview_audio").classList.add("hidden");
+      const res = await fetch("/api/tts-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lang: $("lang").value,
+          hf_token: $("hf_token").value || null,
+          tts_engine: $("tts_engine").value,
+          tts_style_prompt: $("tts_style").value || null,
+          text: $("tts_preview_text").value,
+        }),
+      });
+      const data = await res.json();
+      $("btn_tts_preview").disabled = false;
+      if (!res.ok) {
+        $("tts_preview_error").textContent = data.error || `Erreur ${res.status}`;
+        $("tts_preview_error").classList.remove("hidden");
+        return;
+      }
+      $("tts_preview_audio").src = data.audio_url;
+      $("tts_preview_audio").classList.remove("hidden");
+      $("tts_preview_audio").play().catch(() => {});
+    };
 
     function getSelectedEpisodeIds() {
       return [...document.querySelectorAll(".ep-check:checked")].map((el) => el.dataset.id);

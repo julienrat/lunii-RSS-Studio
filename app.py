@@ -11,9 +11,10 @@ from urllib.parse import quote
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
+from lunii_rss_studio.audio import TTS_ENGINES, generate_title_tts
 from lunii_rss_studio.builder import build_story_from_rss
 from lunii_rss_studio.config import MAX_UPLOAD_MB, WEB_PORT, WORK_DIR
-from lunii_rss_studio.images import generate_image_hf
+from lunii_rss_studio.images import FONT_CHOICES, generate_image_hf, render_chapter_image_preview
 from lunii_rss_studio.pack_spg import find_studio_pack_generator
 from lunii_rss_studio.sources.litteratureaudio import preview_book
 from lunii_rss_studio.sources.pipeline import (
@@ -46,6 +47,8 @@ UPLOAD_DIR = WORK_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 PREVIEW_DIR = WORK_DIR / "previews"
 PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+TTS_PREVIEW_DIR = WORK_DIR / "tts-previews"
+TTS_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 _jobs: dict[str, dict] = {}
 _job_lock = threading.Lock()
@@ -79,6 +82,12 @@ def _pack_kwargs(data: dict) -> dict:
         "skip_tts": bool(data.get("skip_tts")),
         "skip_pack_zip": bool(data.get("skip_zip")),
         "lang": data.get("lang", "fr"),
+        "tts_engine": data.get("tts_engine") or "gtts",
+        "tts_style_prompt": data.get("tts_style_prompt") or None,
+        "chapter_image_text": bool(data.get("chapter_image_text")),
+        "chapter_image_font": data.get("chapter_image_font") or "dejavu-sans-bold",
+        "chapter_image_font_size": int(data.get("chapter_image_font_size", 46)),
+        "chapter_image_template": data.get("chapter_image_template") or "Chapitre {n}",
         "chaptering": bool(data.get("chaptering")),
         "chapter_minutes": int(data.get("chapter_minutes", 15)),
     }
@@ -109,6 +118,8 @@ def index():
         spg_available=spg is not None,
         spg_cmd=" ".join(spg) if spg else None,
         max_upload_mb=MAX_UPLOAD_MB,
+        tts_engines=TTS_ENGINES,
+        font_choices=FONT_CHOICES,
     )
 
 
@@ -245,6 +256,63 @@ def preview_image():
     if not p.is_file():
         return jsonify({"error": "Image invalide"}), 400
     return send_file(p)
+
+
+@app.route("/api/tts-preview", methods=["POST"])
+def tts_preview():
+    data = request.get_json(force=True) or {}
+    text = (data.get("text") or "Bonjour, voici un aperçu de la voix.").strip()
+    if not text:
+        return jsonify({"error": "Texte de prévisualisation requis"}), 400
+
+    engine = data.get("tts_engine") or "gtts"
+    if engine not in TTS_ENGINES:
+        return jsonify({"error": f"Moteur TTS inconnu : {engine}"}), 400
+
+    try:
+        dest = TTS_PREVIEW_DIR / f"{uuid.uuid4().hex}.mp3"
+        generate_title_tts(
+            text[:240],
+            dest,
+            lang=data.get("lang") or "fr",
+            tts_engine=engine,
+            hf_token=data.get("hf_token") or None,
+            tts_style_prompt=data.get("tts_style_prompt") or None,
+        )
+        return jsonify({"audio_url": f"/api/tts-preview-audio?path={quote(str(dest))}"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/tts-preview-audio")
+def tts_preview_audio():
+    path = request.args.get("path", "")
+    p = Path(path).resolve()
+    try:
+        p.relative_to(TTS_PREVIEW_DIR.resolve())
+    except ValueError:
+        return jsonify({"error": "Audio invalide"}), 400
+    if not p.is_file():
+        return jsonify({"error": "Audio invalide"}), 400
+    return send_file(p)
+
+
+@app.route("/api/chapter-image-preview", methods=["POST"])
+def chapter_image_preview():
+    data = request.get_json(force=True) or {}
+    template = data.get("chapter_image_template") or "Chapitre {n}"
+    text = template.replace("{n}", "1").replace("X", "1")
+    try:
+        dest = PREVIEW_DIR / f"chapter_{uuid.uuid4().hex}.png"
+        render_chapter_image_preview(
+            dest,
+            text=text,
+            font_key=data.get("chapter_image_font") or "dejavu-sans-bold",
+            font_size=int(data.get("chapter_image_font_size", 46)),
+        )
+        return jsonify({"image_url": f"/api/preview-image?path={quote(str(dest))}"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/preview", methods=["POST"])

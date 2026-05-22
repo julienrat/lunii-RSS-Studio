@@ -66,7 +66,8 @@ label.check { display: flex; align-items: center; gap: 0.5rem; }
 input[type="url"],
 input[type="text"],
 input[type="password"],
-input[type="number"] {
+input[type="number"],
+select {
   width: 100%;
   margin-top: 0.25rem;
   padding: 0.5rem 0.75rem;
@@ -74,6 +75,36 @@ input[type="number"] {
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
+}
+
+.tts-preview {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.tts-preview label,
+.tts-preview p {
+  margin-bottom: 0;
+}
+
+.tts-preview audio {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.chapter-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.chapter-image-preview p {
+  margin: 0;
 }
 
 .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }

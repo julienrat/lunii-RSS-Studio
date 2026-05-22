@@ -122,6 +122,10 @@ def ensure_menu_items(
     story_dir: Path,
     menu_name: str,
     menu_label: str | None = None,
+    lang: str | None = None,
+    tts_engine: str = "gtts",
+    hf_token: str | None = None,
+    tts_style_prompt: str | None = None,
     progress: ProgressFn = None,
 ) -> None:
     """
@@ -137,7 +141,15 @@ def ensure_menu_items(
     label = menu_label or menu_name
     menu_mp3 = menu_dir / "0-item.mp3"
     if not menu_mp3.exists():
-        generate_title_tts(label, menu_mp3, progress=progress)
+        generate_title_tts(
+            label,
+            menu_mp3,
+            lang=lang,
+            tts_engine=tts_engine,
+            hf_token=hf_token,
+            tts_style_prompt=tts_style_prompt,
+            progress=progress,
+        )
         convert_audio_for_lunii(menu_mp3, progress=progress)
         _log(progress, f"Audio menu : {menu_mp3.relative_to(story_dir)}")
 
